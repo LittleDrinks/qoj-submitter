@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "qoj-submitter-direct"
 version = "0.1.0"
 description = "A direct command-line submitter for QOJ contests"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["requests>=2.31,<3", "beautifulsoup4>=4.12,<5", "pycurl>=7.45,<8"]
 
