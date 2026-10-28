@@ -130,19 +130,34 @@ class QojClient:
         if session is None and self.base == "https://qoj.ac":
             self.session.mount(self.base + "/", CurlAdapter())
 
-    def get(self, path):
+    def get(self, path, allow_404=False):
         try:
             response = self.session.get(urljoin(self.base + "/", path), timeout=TIMEOUT)
         except requests.RequestException as exc:
             raise QojError(f"Network request failed: {exc.__class__.__name__}") from exc
         if response.status_code == 403:
             raise QojError("HTTP 403: QOJ or a security check blocked this client. Browser access does not guarantee CLI access")
-        if response.status_code >= 400:
+        if response.status_code >= 400 and not (allow_404 and response.status_code == 404):
             raise QojError(f"QOJ returned HTTP {response.status_code}")
         parsed = urlparse(response.url)
         if f"{parsed.scheme}://{parsed.netloc}" != self.base:
             raise QojError("Unexpected redirect to another host")
         return response
+
+    def status(self):
+        response = self.get("/")
+        page = soup(response.text)
+        links = page.find_all("a", href=True)
+        logged_in = any(urlparse(link["href"]).path == "/logout" for link in links)
+        if logged_in:
+            for link in links:
+                path = urlparse(link["href"]).path
+                if link.get_text(" ", strip=True).lower() == "my profile" and path.startswith("/user/profile/"):
+                    return path.removeprefix("/user/profile/")
+            return "(account name unavailable)"
+        if any(urlparse(link["href"]).path == "/login" for link in links):
+            return None
+        raise QojError("Cannot determine login status from the site response")
 
     def login(self, username, password):
         response = self.get("/login")

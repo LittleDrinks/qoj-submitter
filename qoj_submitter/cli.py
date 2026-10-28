@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .client import QojClient, QojError, UnknownSubmission, base_url, contest_id
+from .samples import download, write_archives
 
 
 def state_dir():
@@ -88,6 +89,11 @@ def parser():
     login.add_argument("--url", default="https://qoj.ac", choices=["https://qoj.ac", "https://contest.ucup.ac"])
     contest = sub.add_parser("contest", help="Bind a contest by ID or URL")
     contest.add_argument("contest")
+    sub.add_parser("status", help="Show current site, verified login and bound contest")
+    samples = sub.add_parser("samples", help="Download samples for the bound contest")
+    samples.add_argument("-c", "--contest", help="contest ID or URL (overrides binding)")
+    samples.add_argument("-o", "--output-dir", default=".", help="output directory (default: current directory)")
+    samples.add_argument("--force", action="store_true", help="replace existing archives")
     submit = sub.add_parser("submit", help="Submit a source file")
     add_submit_args(submit)
     return p
@@ -171,6 +177,40 @@ def execute(args):
         print(f"Bound contest {contest['id']}: {contest['name']}")
         for label, problem in contest["problems"].items():
             print(f"  {label}: {problem['name']} ({problem['id']})")
+    elif args.command == "status":
+        host = config["host"]
+        contest = config["contests"].get(host)
+        print("Site: " + host)
+        print(f"Contest: {contest['name']} ({contest['id']})" if contest else "Contest: not bound")
+        client = make_client(root, host)
+        try:
+            username = client.status()
+        except QojError as exc:
+            print("Login: unknown (" + str(exc) + ")")
+            raise QojError("Could not verify login status") from exc
+        print("Login: " + ("logged in as " + username if username else "not logged in"))
+        save_cookies(root, client)
+    elif args.command == "samples":
+        host = config["host"]
+        client = make_client(root, host)
+        if args.contest:
+            contest = client.contest(check_contest_host(args.contest, host))
+        else:
+            contest = config["contests"].get(host)
+        if not contest:
+            raise QojError("No contest bound; run qoj contest CONTEST_ID")
+        output = Path(args.output_dir)
+        if not output.is_dir():
+            raise QojError(f"Output directory does not exist: {output}")
+        if (output / "samples.zip").exists() and not args.force:
+            raise QojError(f"{output / 'samples.zip'} already exists; use --force to replace it")
+        print(f"Downloading {contest['name']} ({contest['id']}) from {host}")
+        samples, extras, warnings = download(client, contest)
+        for warning in warnings:
+            print("WARNING: " + warning, file=sys.stderr)
+        for path in write_archives(output, samples, extras, args.force):
+            print("Created: " + str(path))
+        save_cookies(root, client)
     else:
         run_submit(args, root, config)
 
