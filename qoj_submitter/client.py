@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -47,6 +48,19 @@ def contest_id(value):
 
 def soup(text):
     return BeautifulSoup(text, "html.parser")
+
+
+def logged_in_user(page):
+    links = page.find_all("a", href=True)
+    if any(urlparse(link["href"]).path == "/logout" for link in links):
+        for link in links:
+            path = urlparse(link["href"]).path
+            if link.get_text(" ", strip=True).lower() == "my profile" and path.startswith("/user/profile/"):
+                return path.removeprefix("/user/profile/")
+        return "(account name unavailable)"
+    if any(urlparse(link["href"]).path == "/login" for link in links):
+        return None
+    raise QojError("Cannot determine login status from the site response")
 
 
 def login_token(html):
@@ -146,18 +160,7 @@ class QojClient:
 
     def status(self):
         response = self.get("/")
-        page = soup(response.text)
-        links = page.find_all("a", href=True)
-        logged_in = any(urlparse(link["href"]).path == "/logout" for link in links)
-        if logged_in:
-            for link in links:
-                path = urlparse(link["href"]).path
-                if link.get_text(" ", strip=True).lower() == "my profile" and path.startswith("/user/profile/"):
-                    return path.removeprefix("/user/profile/")
-            return "(account name unavailable)"
-        if any(urlparse(link["href"]).path == "/login" for link in links):
-            return None
-        raise QojError("Cannot determine login status from the site response")
+        return logged_in_user(soup(response.text))
 
     def login(self, username, password):
         response = self.get("/login")
@@ -196,7 +199,75 @@ class QojClient:
         response = self.get(f"/contest/{cid}/problem/{pid}")
         return submission_form(response.text, response.url, self.base, cid, pid)
 
+    def _submission_list(self, cid):
+        path = f"/contest/{cid}/submissions"
+        response = self.get(path)
+        page = soup(response.text)
+        username = logged_in_user(page)
+        table = next((t for t in page.find_all("table")
+                      if t.find("th") and t.find("th").get_text(strip=True) == "ID"), None)
+        if (urlparse(response.url).path.rstrip("/") != path or table is None
+                or username in (None, "(account name unavailable)")):
+            raise QojError("Cannot read the current account's submission list; check login and contest access")
+        headings = [cell.get_text(" ", strip=True) for cell in table.find_all("th")]
+        if "Language" not in headings:
+            raise QojError("Unsupported QOJ submission list format")
+        language_column = headings.index("Language")
+        rows = {}
+        for row in table.find_all("tr"):
+            cells = row.find_all("td", recursive=False)
+            if not cells:
+                continue
+            if len(cells) <= max(2, language_column):
+                raise QojError("Unsupported QOJ submission list format")
+            links = [cell.find("a", href=True) for cell in cells[:2]]
+            owner_link = cells[2].find("a", href=True)
+            owner_span = cells[2].find("span", class_="uoj-username")
+            if not all(links) or not (owner_link or owner_span):
+                raise QojError("Unsupported QOJ submission list format")
+            # QOJ's JavaScript turns this username span into a profile link.
+            owner = ("/user/profile/" + owner_span.get_text(strip=True) if owner_span else
+                     urlparse(owner_link["href"]).path)
+            sid = re.fullmatch(r"/submission/(\d+)/?", urlparse(links[0]["href"]).path)
+            if not sid:
+                raise QojError("Unsupported QOJ submission link")
+            rows[int(sid.group(1))] = (urlparse(links[1]["href"]).path,
+                                      owner, cells[language_column].get_text(" ", strip=True))
+        return username, rows
+
+    def _confirm_submission(self, form, contents, language, cid, before):
+        username, old_rows = before
+        last_id = max(old_rows, default=0)
+        problem_path = re.match(r"/contest/\d+/problem/\d+", urlparse(form.action).path).group()
+        expected = (problem_path, f"/user/profile/{username}", language)
+        # HTML parsing normalizes line endings, including files uploaded on Windows.
+        source = contents.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        checked = {}
+        for attempt in range(3):
+            current_user, rows = self._submission_list(cid)
+            if current_user != username:
+                break
+            candidates = [sid for sid, row in rows.items() if sid > last_id and row == expected]
+            for sid in candidates:
+                if sid not in checked:
+                    response = self.get(f"/submission/{sid}")
+                    code = soup(response.text).select_one("pre > code[class^=sh_]")
+                    checked[sid] = (urlparse(response.url).path.rstrip("/") == f"/submission/{sid}"
+                                    and code is not None
+                                    and code.get_text().replace("\r\n", "\n").replace("\r", "\n") == source)
+            confirmed = [sid for sid in candidates if checked[sid]]
+            if len(confirmed) == 1:
+                return f"{self.base}/submission/{confirmed[0]}"
+            if len(confirmed) > 1:
+                break
+            if attempt < 2:
+                time.sleep(1)
+        return None
+
     def submit(self, form, filename, contents, language, cid):
+        # QOJ may redirect to the list rather than to the new submission. Capture
+        # a baseline before the only POST so an older accepted solution cannot match.
+        before = self._submission_list(cid)
         data = {"_token": form.token, "answer_answer_upload_type": "file",
                 "answer_answer_language": language, "submit-answer": "answer"}
         try:
@@ -217,4 +288,12 @@ class QojClient:
                 raise UnknownSubmission("Unexpected redirect; check QOJ before retrying")
             if re.fullmatch(r"/submission/\d+/?", parsed.path):
                 return target
+            if parsed.path.rstrip("/") == f"/contest/{cid}/submissions":
+                try:
+                    confirmed = self._confirm_submission(form, contents, language, cid, before)
+                except (QojError, UnicodeError) as exc:
+                    raise UnknownSubmission(
+                        f"Could not verify the submission after sending it. Check {self.base}/contest/{cid}/submissions before retrying") from exc
+                if confirmed:
+                    return confirmed
         raise UnknownSubmission(f"QOJ did not provide a confirmed submission ID. Check {self.base}/contest/{cid}/submissions before retrying")
