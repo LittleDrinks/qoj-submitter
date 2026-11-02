@@ -60,6 +60,9 @@ class ProtocolTests(unittest.TestCase):
         client.login("user", "password")
         self.assertNotEqual(session.post.call_args.kwargs["data"]["password"], "password")
         form = submission_form(FORM, "https://qoj.ac/contest/3387/problem/15419", "https://qoj.ac", "3387", "15419")
+        session.get.return_value = Mock(status_code=200, url="https://qoj.ac/contest/3387/submissions", text="""
+            <a href='/logout'>Logout</a><a href='/user/profile/user'>My Profile</a>
+            <table><tr><th>ID</th><th>Problem</th><th>Submitter</th><th>Result</th><th>Language</th></tr></table>""")
         session.post.return_value = Mock(status_code=302, headers={"Location": "/submission/123"})
         self.assertEqual(client.submit(form, "a.cpp", b"code", "C++20", "3387"), "https://qoj.ac/submission/123")
         session.post.return_value = Mock(status_code=200, headers={})
