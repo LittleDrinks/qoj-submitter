@@ -16,6 +16,7 @@ Repository = "https://github.com/LittleDrinks/qoj-submitter"
 [project.scripts]
 qoj = "qoj_submitter.cli:main"
 qoj-submit = "qoj_submitter.cli:submit_main"
+submit = "qoj_submitter.cli:submit_main"
 
 [tool.setuptools.packages.find]
 include = ["qoj_submitter*"]

@@ -264,10 +264,11 @@ class QojClient:
                 time.sleep(1)
         return None
 
-    def submit(self, form, filename, contents, language, cid):
+    def submit(self, form, filename, contents, language, cid, *, recover_receipt=True):
         # QOJ may redirect to the list rather than to the new submission. Capture
         # a baseline before the only POST so an older accepted solution cannot match.
-        before = self._submission_list(cid)
+        # Stateful consumers can own recovery in their durable operation ledger.
+        before = self._submission_list(cid) if recover_receipt else None
         data = {"_token": form.token, "answer_answer_upload_type": "file",
                 "answer_answer_language": language, "submit-answer": "answer"}
         try:
@@ -288,7 +289,7 @@ class QojClient:
                 raise UnknownSubmission("Unexpected redirect; check QOJ before retrying")
             if re.fullmatch(r"/submission/\d+/?", parsed.path):
                 return target
-            if parsed.path.rstrip("/") == f"/contest/{cid}/submissions":
+            if recover_receipt and parsed.path.rstrip("/") == f"/contest/{cid}/submissions":
                 try:
                     confirmed = self._confirm_submission(form, contents, language, cid, before)
                 except (QojError, UnicodeError) as exc:
