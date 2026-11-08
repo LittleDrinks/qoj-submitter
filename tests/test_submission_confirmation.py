@@ -62,6 +62,19 @@ class SubmissionConfirmationTests(unittest.TestCase):
         self.session.post.assert_called_once()
         self.assertEqual(self.session.method_calls[0][0], "get")
 
+    def test_caller_owned_recovery_sends_once_and_returns_direct_receipt(self):
+        self.session.post.return_value.headers = {"Location": "/submission/3345815"}
+        result = self.client.submit(self.form, "m.cpp", SOURCE, "C++20", "4600", recover_receipt=False)
+        self.assertEqual(result, "https://qoj.ac/submission/3345815")
+        self.session.post.assert_called_once()
+        self.session.get.assert_not_called()
+
+    def test_caller_owned_recovery_receives_unknown_list_redirect(self):
+        with self.assertRaises(UnknownSubmission):
+            self.client.submit(self.form, "m.cpp", SOURCE, "C++20", "4600", recover_receipt=False)
+        self.session.post.assert_called_once()
+        self.session.get.assert_not_called()
+
     def test_first_submission_with_empty_baseline(self):
         self.session.get.side_effect = [response(listing()), response(listing(NEW)), source_response()]
         self.assertEqual(self.submit(), "https://qoj.ac/submission/3345815")
