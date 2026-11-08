@@ -2,7 +2,7 @@
 
 一个直接与 QOJ 通信的命令行工具，支持登录、绑定比赛、下载样例和提交代码。无需常驻服务、浏览器窗口或油猴脚本。
 
-支持 `qoj.ac` 和 `contest.ucup.ac`；每个站点的登录会话和比赛绑定分别保存。本项目 fork 自 [Minstdfx/qoj-submitter](https://github.com/Minstdfx/qoj-submitter)，不是 QOJ 官方工具。
+支持 `qoj.ac` 和 `contest.ucup.ac`；每个站点的登录会话和比赛绑定分别保存。
 
 ## 安装
 
