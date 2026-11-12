@@ -5,6 +5,7 @@ import getpass
 import http.cookiejar
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +13,7 @@ from urllib.parse import urlparse
 
 from .client import QojClient, QojError, UnknownSubmission, base_url, contest_id
 from .samples import download, write_archives
+from .operations import Operations, baseline
 
 
 def state_dir():
@@ -96,6 +98,9 @@ def parser():
     samples.add_argument("--force", action="store_true", help="replace existing archives")
     submit = sub.add_parser("submit", help="Submit a source file")
     add_submit_args(submit)
+    recover = sub.add_parser("recover", help="Recover a saved submission receipt using reads only")
+    recover.add_argument("operation", nargs="?", type=int, help="operation number (default: sole pending operation)")
+    recover.add_argument("--abandon", action="store_true", help="end verification of this operation and allow a new upload")
     return p
 
 
@@ -135,22 +140,103 @@ def run_submit(args, root, config):
         raise QojError("Cannot read source file: " + str(exc)) from exc
     if not contents:
         raise QojError("Source file is empty")
-    form = client.form(contest["id"], problem["id"])
-    language = choose_language(form.languages, args.language, path.name)
-    print(f"File: {path}\nContest: {contest['name']} ({contest['id']})\nProblem: {label} - {problem['name']}\nLanguage: {language}\nSite: {host}")
-    if args.dry_run:
-        print("Dry run: no submission sent.")
-    elif args.assume_yes or input("Submit? [y/N] ").strip().lower() in ("y", "yes"):
-        print("Submission received: " + client.submit(form, path.name, contents, language, contest["id"]))
-    else:
-        print("Cancelled.")
-    save_cookies(root, client)
+    with Operations(root) as operations:
+        pending = operations.pending(host, contest["id"], problem["id"])
+        if pending and not args.dry_run:
+            operation = pending[0]
+            language = choose_language([operation["language"]], args.language, path.name)
+            if operation["source"] != contents or operation["language"] != language:
+                raise QojError(f"Operation {operation['id']} has a saved source; run qoj recover {operation['id']} "
+                               f"or qoj recover {operation['id']} --abandon before a new upload")
+            recover_operation(client, operations, operation)
+        else:
+            form = client.form(contest["id"], problem["id"])
+            language = choose_language(form.languages, args.language, path.name)
+            print(f"File: {path}\nContest: {contest['name']} ({contest['id']})\nProblem: {label} - {problem['name']}\nLanguage: {language}\nSite: {host}")
+            if args.dry_run:
+                print("Dry run: no submission sent.")
+            elif args.assume_yes or input("Submit? [y/N] ").strip().lower() in ("y", "yes"):
+                before = client.submission_snapshot(contest["id"])
+                operation = operations.start(host, contest["id"], problem["id"], form, language, contents, before)
+                print(f"Operation {operation['id']} saved. Resume verification: qoj recover {operation['id']}", flush=True)
+                try:
+                    receipt = client.submit(form, path.name, contents, language, contest["id"], recover_receipt=False)
+                except UnknownSubmission:
+                    recover_operation(client, operations, operation)
+                except QojError:
+                    operations.finish(operation['id'], 'rejected')
+                    raise
+                else:
+                    confirm_operation(operations, operation, receipt)
+            else:
+                print("Cancelled.")
+    save_submission_cookies(root, client)
+
+
+def confirm_operation(operations, operation, receipt):
+    print("Submission received: " + receipt, flush=True)
+    try:
+        operations.finish(operation['id'], 'confirmed', receipt)
+    except (OSError, sqlite3.Error) as exc:
+        print(f"Receipt is confirmed; save it above. Local state update failed: {type(exc).__name__}", file=sys.stderr)
+
+
+def recover_operation(client, operations, operation):
+    print(f"Recovering operation {operation['id']} ({operation['host']}, contest {operation['cid']})", flush=True)
+    try:
+        receipt = client.recover_submission(operation['action'], operation['source'], operation['language'],
+                                            operation['cid'], baseline(operation))
+    except UnknownSubmission as exc:
+        raise UnknownSubmission(f"{exc}. Continue with qoj recover {operation['id']}") from exc
+    confirm_operation(operations, operation, receipt)
+
+
+def save_submission_cookies(root, client):
+    try:
+        save_cookies(root, client)
+    except OSError as exc:
+        print(f"Session save failed: {type(exc).__name__}; run qoj login to refresh the saved session", file=sys.stderr)
+
+
+def run_recover(args, root):
+    with Operations(root) as operations:
+        if args.operation is None:
+            if args.abandon:
+                raise QojError("Choose the operation to end: qoj recover NUMBER --abandon")
+            pending = operations.pending()
+            if not pending:
+                print("All saved operations are resolved.")
+                return
+            if len(pending) != 1:
+                raise QojError("Choose qoj recover NUMBER from pending operations: " +
+                               ", ".join(str(row['id']) for row in pending))
+            operation = pending[0]
+        else:
+            operation = operations.get(args.operation)
+        if operation['state'] == 'confirmed':
+            print("Submission received: " + operation['receipt'])
+            return
+        if operation['state'] != 'pending':
+            print(f"Operation {operation['id']}: {operation['state']}")
+            return
+        if args.abandon:
+            print(f"Check {operation['host']}/contest/{operation['cid']}/submissions first. "
+                  "Ending verification permits another upload of the same code.")
+            if input("End verification? [y/N] ").strip().lower() in ("y", "yes"):
+                operations.finish(operation['id'], 'abandoned')
+                print(f"Operation {operation['id']} released; submit can start a new operation.")
+            return
+        client = make_client(root, operation['host'])
+        recover_operation(client, operations, operation)
+        save_submission_cookies(root, client)
 
 
 def execute(args):
     root = state_dir()
     config = load_config(root)
-    if args.command == "login":
+    if args.command == "recover":
+        run_recover(args, root)
+    elif args.command == "login":
         host = base_url(args.url)
         client = QojClient(host)
         username = input("QOJ username: ").strip()
@@ -218,11 +304,11 @@ def execute(args):
 def main():
     try:
         execute(parser().parse_args())
-    except (QojError, OSError) as exc:
+    except (QojError, OSError, sqlite3.Error) as exc:
         print("Error: " + str(exc), file=sys.stderr)
         return 2 if isinstance(exc, UnknownSubmission) else 1
     except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
+        print("\nInterrupted. Use qoj recover to check saved submissions.", file=sys.stderr)
         return 130
     return 0
 
@@ -234,10 +320,10 @@ def submit_main():
     args.command = "submit"
     try:
         execute(args)
-    except (QojError, OSError) as exc:
+    except (QojError, OSError, sqlite3.Error) as exc:
         print("Error: " + str(exc), file=sys.stderr)
         return 2 if isinstance(exc, UnknownSubmission) else 1
     except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
+        print("\nInterrupted. Use qoj recover to check saved submissions.", file=sys.stderr)
         return 130
     return 0

@@ -23,7 +23,13 @@ class SamplesTests(unittest.TestCase):
     def test_unsafe_archive_rejected(self):
         for filename in ("../escape.in", "/absolute.in", "folder\\file.in", "C:/outside.in"):
             with self.subTest(filename=filename), self.assertRaises(QojError):
-                attachment_files(zip_bytes({filename: b"x"}))
+                archive = io.BytesIO()
+                with zipfile.ZipFile(archive, 'w') as output:
+                    entry = zipfile.ZipInfo('placeholder')
+                    # Preserve the unsafe member literally on both operating systems.
+                    entry.filename = filename
+                    output.writestr(entry, b'x')
+                attachment_files(archive.getvalue())
 
     def test_download_missing_and_interactive(self):
         client = Mock()

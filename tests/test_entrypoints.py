@@ -1,4 +1,5 @@
 import subprocess
+import os
 import sysconfig
 import unittest
 from importlib.metadata import distribution
@@ -11,7 +12,7 @@ class EntryPointTests(unittest.TestCase):
                    if entry.group == 'console_scripts'}
         self.assertEqual(entries['submit'].value, entries['qoj-submit'].value)
         for command in ('qoj-submit', 'submit'):
-            result = subprocess.run([str(Path(sysconfig.get_path('scripts')) / command), '--help'],
+            result = subprocess.run([str(Path(sysconfig.get_path('scripts')) / (command + ('.exe' if os.name == 'nt' else ''))), '--help'],
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('--contest', result.stdout)

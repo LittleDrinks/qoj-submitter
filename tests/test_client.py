@@ -1,4 +1,5 @@
 import tempfile
+import os
 import unittest
 import argparse
 import contextlib
@@ -85,7 +86,8 @@ class ProtocolTests(unittest.TestCase):
             root = Path(temp)
             client = make_client(root, "https://qoj.ac")
             save_cookies(root, client)
-            self.assertEqual((root / "qoj.ac.cookies").stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual((root / "qoj.ac.cookies").stat().st_mode & 0o777, 0o600)
             self.assertNotEqual(client.session.cookies.filename, make_client(root, "https://contest.ucup.ac").session.cookies.filename)
 
     def test_dry_run_does_not_submit(self):

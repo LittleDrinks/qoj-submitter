@@ -58,7 +58,17 @@ class CurlAdapter(BaseAdapter):
             response.raw = SimpleNamespace(_original_response=SimpleNamespace(msg=headers))
             return response
         except pycurl.error as exc:
-            raise requests.RequestException(f"libcurl error {exc.args[0]}") from exc
+            code = exc.args[0]
+            error = requests.RequestException
+            if code == pycurl.E_OPERATION_TIMEDOUT:
+                error = requests.Timeout
+            elif code in (pycurl.E_COULDNT_RESOLVE_HOST, pycurl.E_COULDNT_RESOLVE_PROXY,
+                          pycurl.E_COULDNT_CONNECT, pycurl.E_SEND_ERROR, pycurl.E_RECV_ERROR,
+                          pycurl.E_GOT_NOTHING, pycurl.E_PARTIAL_FILE):
+                error = requests.ConnectionError
+            elif code in (pycurl.E_SSL_CACERT, pycurl.E_SSL_CONNECT_ERROR):
+                error = requests.exceptions.SSLError
+            raise error(f"libcurl error {code}") from exc
         finally:
             curl.close()
 

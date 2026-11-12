@@ -1,4 +1,5 @@
 import html
+import itertools
 import unittest
 from unittest.mock import Mock, patch
 
@@ -138,7 +139,7 @@ class SubmissionConfirmationTests(unittest.TestCase):
         self.session.post.assert_called_once()
 
     def test_read_failure_after_post_preserves_unknown_outcome(self):
-        self.session.get.side_effect = [response(listing(OLD)), requests.Timeout()]
+        self.session.get.side_effect = itertools.chain([response(listing(OLD))], itertools.repeat(requests.Timeout()))
         with self.assertRaises(UnknownSubmission):
             self.submit()
         self.session.post.assert_called_once()
@@ -169,6 +170,31 @@ class SubmissionConfirmationTests(unittest.TestCase):
                 with self.assertRaises(UnknownSubmission):
                     self.submit()
         self.assertEqual(self.session.get.call_count, 3)
+
+    def test_an_unreadable_second_candidate_keeps_receipt_ambiguous(self):
+        other = (3345816, *NEW[1:])
+        candidates = response(listing(NEW, other, OLD))
+        missing = response('Judging', f'/submission/{other[0]}')
+        self.session.get.side_effect = [candidates, source_response(), missing,
+                                        candidates, missing, candidates, missing]
+        with self.assertRaises(UnknownSubmission):
+            self.client.recover_submission(self.form.action, SOURCE, 'C++20', '4600',
+                                           ('LittleDrinks', {OLD[0]: ('unused',)}))
+        self.session.post.assert_not_called()
+
+    def test_receipt_lookup_shares_a_request_budget_across_many_candidates(self):
+        candidates = [(3345815 + i, *NEW[1:]) for i in range(20)]
+        def read(url, **kwargs):
+            if url.endswith('/submissions'):
+                return response(listing(*candidates, OLD))
+            sid = int(url.rsplit('/', 1)[-1])
+            return source_response(b'different source', sid)
+        self.session.get.side_effect = read
+        with self.assertRaisesRegex(UnknownSubmission, 'budget exhausted'):
+            self.client.recover_submission(self.form.action, SOURCE, 'C++20', '4600',
+                                           ('LittleDrinks', {OLD[0]: ('unused',)}))
+        self.assertLessEqual(self.session.get.call_count, 12)
+        self.session.post.assert_not_called()
 
 
 if __name__ == "__main__":
