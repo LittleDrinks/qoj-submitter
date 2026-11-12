@@ -28,7 +28,7 @@ def attachment_files(data):
         for info in infos:
             if info.is_dir():
                 continue
-            name = info.filename
+            name = info.orig_filename
             path = PurePosixPath(name)
             mode = info.external_attr >> 16
             if ("\\" in name or ":" in name or any(ord(char) < 32 for char in name)
