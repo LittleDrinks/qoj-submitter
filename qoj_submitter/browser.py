@@ -319,9 +319,15 @@ class ChallengeRecovery:
             raise ChallengeError('Cloudflare verification is still required; retry the command to resume')
         self.attempted = True
         print('Cloudflare verification: opening a separate browser. Complete verification there; this command will continue. Close it or press Ctrl+C to cancel.', flush=True)
+        self.client.log('challenge', 'open browser for ' + url)
         self.browser = BrowserSession(self.client.base, self.executable)
-        self.browser.start(self.client.session.cookies)
-        self.browser.verify(url, self.timeout)
+        try:
+            self.browser.start(self.client.session.cookies)
+            self.browser.verify(url, self.timeout)
+        except QojError as exc:
+            self.client.log('challenge-error', f"{exc} :: browser={self.browser.executable}")
+            raise
+        self.client.log('challenge-ok', 'browser verification confirmed')
         self.adapter = BrowserAdapter(self.browser)
         self.client.session.mount(self.client.base + '/', self.adapter)
         self.generation += 1
