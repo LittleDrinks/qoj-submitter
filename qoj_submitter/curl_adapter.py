@@ -11,10 +11,26 @@ from requests.structures import CaseInsensitiveDict
 
 
 class CurlAdapter(BaseAdapter):
+    """Requests transport that keeps one libcurl handle so connections are reused."""
+    def __init__(self):
+        self.curl = None
+
+    def _handle(self):
+        if self.curl is None:
+            self.curl = pycurl.Curl()
+        return self.curl
+
+    def _discard(self):
+        if self.curl is not None:
+            self.curl.close()
+            self.curl = None
+
     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
         if stream or cert or verify is not True:
             raise requests.RequestException("Unsupported libcurl transport option")
-        curl = pycurl.Curl()
+        curl = self._handle()
+        # Preserve live connections and the DNS cache between commands.
+        curl.reset()
         body = BytesIO()
         headers = Message()
 
@@ -68,9 +84,8 @@ class CurlAdapter(BaseAdapter):
                 error = requests.ConnectionError
             elif code in (pycurl.E_SSL_CACERT, pycurl.E_SSL_CONNECT_ERROR):
                 error = requests.exceptions.SSLError
+            self._discard()
             raise error(f"libcurl error {code}") from exc
-        finally:
-            curl.close()
 
     def close(self):
-        pass
+        self._discard()
