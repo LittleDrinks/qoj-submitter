@@ -53,16 +53,31 @@ def timeline(root, operation_id=None, limit=200):
 
 
 def dump(root, output):
+    """Copy diagnostics and operation states without source code or upload baselines."""
     source = sqlite3.connect(root / 'operations.sqlite3', timeout=5)
     try:
-        source.execute('SELECT 1')
-        target = sqlite3.connect(output)
-        try:
-            source.backup(target)
-        finally:
-            target.close()
+        rows = source.execute('SELECT * FROM diagnostics ORDER BY id').fetchall()
+        operations = source.execute('SELECT id, host, cid, pid, language, state, receipt '
+                                    'FROM operations ORDER BY id').fetchall()
     finally:
         source.close()
+    target = sqlite3.connect(output)
+    try:
+        target.execute('''CREATE TABLE IF NOT EXISTS diagnostics (
+            id INTEGER PRIMARY KEY, at TEXT NOT NULL, operation_id INTEGER,
+            event TEXT NOT NULL, detail TEXT)''')
+        target.execute('''CREATE TABLE IF NOT EXISTS operations (
+            id INTEGER PRIMARY KEY, host TEXT, cid TEXT, pid TEXT, language TEXT,
+            state TEXT, receipt TEXT)''')
+        with target:
+            target.executemany('INSERT INTO diagnostics VALUES (?,?,?,?,?)', rows)
+            target.executemany('INSERT INTO operations VALUES (?,?,?,?,?,?,?)', operations)
+    finally:
+        target.close()
+    try:
+        os.chmod(output, 0o600)
+    except OSError:
+        pass
 
 
 class Operations(AbstractContextManager):

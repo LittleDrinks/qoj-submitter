@@ -268,7 +268,7 @@ class QojClient:
         except QojError as exc:
             # Keep a structural summary so a later failure can be explained without the page.
             page = soup(response.text)
-            self.log('form-error', f"cid={cid} pid={pid} {exc} :: " + ', '.join([
+            summary = ', '.join([
                 f"url={response.url}",
                 f"bytes={len(response.content) if isinstance(response.content, (bytes, bytearray)) else -1}",
                 f"form={bool(page.find('form', id='form-answer'))}",
@@ -277,8 +277,9 @@ class QojClient:
                 f"js_group={bool(page.find(id='form-group-answer_answer'))}",
                 f"scripts={sum(1 for tag in page.find_all('script') if 'source_code_form_group' in (tag.string or tag.get_text() or ''))}",
                 f"account={logged_in_user(page) if page.find('a', href=re.compile(r'^/user/profile/')) else 'missing'}",
-            ]))
-            raise
+            ])
+            self.log('form-error', f"cid={cid} pid={pid} {exc} :: {summary}")
+            raise QojError(f"{exc} [{summary}]") from exc
         self.log('form', f"cid={cid} pid={pid} languages={len(form.languages)} account={form.account}")
         return form
 

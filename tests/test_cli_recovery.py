@@ -281,6 +281,7 @@ class CliRecoveryTests(unittest.TestCase):
         result = self.run_cli('submit', str(self.source), '-y')
         self.assertEqual(result[0], 1, result)
         self.assertIn('incomplete', result[2])
+        self.assertIn('token=False', result[2])
         log = self.run_cli('qoj', 'diagnostics')
         self.assert_ok(log)
         self.assertIn('form-error', log[1])
@@ -295,10 +296,16 @@ class CliRecoveryTests(unittest.TestCase):
         self.assert_ok(result)
         self.assertTrue(target.exists())
         import sqlite3
-        with sqlite3.connect(target) as db:
+        db = sqlite3.connect(target)
+        try:
             events = [row[0] for row in db.execute('SELECT event FROM diagnostics')]
+            columns = [row[1] for row in db.execute('PRAGMA table_info(operations)')]
+        finally:
+            db.close()
         self.assertIn('read', events)
         self.assertIn('receipt', events)
+        self.assertNotIn('source', columns)
+        self.assertNotIn('baseline', columns)
 
     def test_saved_confirmed_receipt_is_available_without_network(self):
         self.server.release.set()
