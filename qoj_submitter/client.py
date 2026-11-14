@@ -164,6 +164,7 @@ class QojClient:
         budget = self._read_budget or ReadBudget(requests=6)
         url = urljoin(self.base + "/", path)
         attempt = 0
+        reason = "Read failed"
         while True:
             parsed = urlparse(url)
             if f"{parsed.scheme}://{parsed.netloc}" != self.base:
@@ -212,7 +213,7 @@ class QojClient:
                     raise TransientReadError(reason + "; read retry limit reached")
                 budget.pause(attempt - 1, response.headers.get('Retry-After') if response is not None else None)
             except ReadFailure as exc:
-                raise TransientReadError(str(exc)) from exc
+                raise TransientReadError(f"{reason} ({exc})") from exc
 
     def status(self):
         response = self.get("/")
