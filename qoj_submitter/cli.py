@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from .client import QojClient, QojError, UnknownSubmission, base_url, contest_id
 from .samples import download, write_archives
 from .operations import Operations, baseline
+from .browser import ChallengeRecovery
 
 
 def state_dir():
@@ -101,7 +102,28 @@ def parser():
     recover = sub.add_parser("recover", help="Recover a saved submission receipt using reads only")
     recover.add_argument("operation", nargs="?", type=int, help="operation number (default: sole pending operation)")
     recover.add_argument("--abandon", action="store_true", help="end verification of this operation and allow a new upload")
+    add_browser_args(recover)
     return p
+
+
+def positive_timeout(value):
+    seconds = int(value)
+    if not 1 <= seconds <= 1800:
+        raise argparse.ArgumentTypeError('Use 1 to 1800 seconds')
+    return seconds
+
+
+def add_browser_args(p):
+    choice = p.add_mutually_exclusive_group()
+    choice.add_argument('--browser', metavar='PATH', help='browser executable for human verification (also enables it outside a terminal)')
+    choice.add_argument('--no-browser', action='store_true', help='return the challenge error without opening a browser')
+    p.add_argument('--browser-timeout', type=positive_timeout, default=300, metavar='SECONDS',
+                   help='human verification timeout (default: 300)')
+
+
+def browser_recovery(client, args):
+    return ChallengeRecovery(client, executable=getattr(args, 'browser', None),
+        disabled=getattr(args, 'no_browser', False), timeout=getattr(args, 'browser_timeout', 300))
 
 
 def add_submit_args(p):
@@ -111,6 +133,7 @@ def add_submit_args(p):
     p.add_argument("-y", "--assume-yes", "--yes", action="store_true", help="skip confirmation")
     p.add_argument("--dry-run", action="store_true", help="validate without submitting")
     p.add_argument("filename", help="source file")
+    add_browser_args(p)
 
 
 def check_contest_host(value, host):
@@ -122,6 +145,13 @@ def check_contest_host(value, host):
 def run_submit(args, root, config):
     host = config["host"]
     client = make_client(root, host)
+    with browser_recovery(client, args) as recovery:
+        submit_with_client(args, root, config, client, recovery)
+    save_submission_cookies(root, client)
+
+
+def submit_with_client(args, root, config, client, recovery):
+    host = config["host"]
     bound = config["contests"].get(host)
     if args.contest:
         contest = client.contest(check_contest_host(args.contest, host))
@@ -151,12 +181,22 @@ def run_submit(args, root, config):
             recover_operation(client, operations, operation)
         else:
             form = client.form(contest["id"], problem["id"])
+            form_generation = recovery.generation
             language = choose_language(form.languages, args.language, path.name)
             print(f"File: {path}\nContest: {contest['name']} ({contest['id']})\nProblem: {label} - {problem['name']}\nLanguage: {language}\nSite: {host}")
             if args.dry_run:
                 print("Dry run: no submission sent.")
             elif args.assume_yes or input("Submit? [y/N] ").strip().lower() in ("y", "yes"):
                 before = client.submission_snapshot(contest["id"])
+                if form.account and form.account != before[0]:
+                    raise QojError("The QOJ account changed before upload; retry with the intended account")
+                if recovery.generation != form_generation:
+                    form = client.form(contest["id"], problem["id"])
+                    if form.account and form.account != before[0]:
+                        raise QojError("The QOJ account changed during verification; retry with the intended account")
+                    if language not in form.languages:
+                        raise QojError("The selected language changed during verification; retry the command")
+                recovery.allow_upload(form.action)
                 operation = operations.start(host, contest["id"], problem["id"], form, language, contents, before)
                 print(f"Operation {operation['id']} saved. Resume verification: qoj recover {operation['id']}", flush=True)
                 try:
@@ -170,7 +210,6 @@ def run_submit(args, root, config):
                     confirm_operation(operations, operation, receipt)
             else:
                 print("Cancelled.")
-    save_submission_cookies(root, client)
 
 
 def confirm_operation(operations, operation, receipt):
@@ -227,7 +266,8 @@ def run_recover(args, root):
                 print(f"Operation {operation['id']} released; submit can start a new operation.")
             return
         client = make_client(root, operation['host'])
-        recover_operation(client, operations, operation)
+        with browser_recovery(client, args):
+            recover_operation(client, operations, operation)
         save_submission_cookies(root, client)
 
 
