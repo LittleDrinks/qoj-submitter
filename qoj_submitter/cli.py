@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from .client import QojClient, QojError, UnknownSubmission, base_url, contest_id
 from .samples import download, write_archives
-from .operations import Operations, baseline
+from .operations import Operations, baseline, record, timeline, dump
 from .browser import ChallengeRecovery
 
 
@@ -62,7 +62,7 @@ def make_client(root, base):
             jar.load(ignore_discard=True, ignore_expires=False)
         except (OSError, http.cookiejar.LoadError) as exc:
             raise QojError("Cannot read saved session; run qoj login") from exc
-    client = QojClient(base)
+    client = QojClient(base, diagnostics=root)
     client.session.cookies = jar
     return client
 
@@ -103,6 +103,10 @@ def parser():
     recover.add_argument("operation", nargs="?", type=int, help="operation number (default: sole pending operation)")
     recover.add_argument("--abandon", action="store_true", help="end verification of this operation and allow a new upload")
     add_browser_args(recover)
+    diagnostics = sub.add_parser("diagnostics", help="Show the local event log for submissions")
+    diagnostics.add_argument("operation", nargs="?", type=int, help="operation number (default: all events)")
+    diagnostics.add_argument("--lines", type=int, default=200, metavar="N", help="how many recent events to show (default: 200)")
+    diagnostics.add_argument("--export", metavar="PATH", help="copy the local database to PATH for sharing")
     return p
 
 
@@ -198,12 +202,15 @@ def submit_with_client(args, root, config, client, recovery):
                         raise QojError("The selected language changed during verification; retry the command")
                 recovery.allow_upload(form.action)
                 operation = operations.start(host, contest["id"], problem["id"], form, language, contents, before)
+                client.log('operation', f"start {contest['id']}/{problem['id']} {language}", operation['id'])
                 print(f"Operation {operation['id']} saved. Resume verification: qoj recover {operation['id']}", flush=True)
                 try:
                     receipt = client.submit(form, path.name, contents, language, contest["id"], recover_receipt=False)
-                except UnknownSubmission:
+                except UnknownSubmission as exc:
+                    client.log('operation', f"upload outcome unknown: {exc}", operation['id'])
                     recover_operation(client, operations, operation)
-                except QojError:
+                except QojError as exc:
+                    client.log('operation', f"rejected: {exc}", operation['id'])
                     operations.finish(operation['id'], 'rejected')
                     raise
                 else:
@@ -213,6 +220,7 @@ def submit_with_client(args, root, config, client, recovery):
 
 
 def confirm_operation(operations, operation, receipt):
+    record(operations.root, operation['id'], 'receipt', receipt)
     print("Submission received: " + receipt, flush=True)
     try:
         operations.finish(operation['id'], 'confirmed', receipt)
@@ -222,10 +230,12 @@ def confirm_operation(operations, operation, receipt):
 
 def recover_operation(client, operations, operation):
     print(f"Recovering operation {operation['id']} ({operation['host']}, contest {operation['cid']})", flush=True)
+    client.log('recover', f"{operation['cid']}/{operation['pid']}", operation['id'])
     try:
         receipt = client.recover_submission(operation['action'], operation['source'], operation['language'],
                                             operation['cid'], baseline(operation))
     except UnknownSubmission as exc:
+        client.log('recover-paused', str(exc), operation['id'])
         raise UnknownSubmission(f"{exc}. Continue with qoj recover {operation['id']}") from exc
     confirm_operation(operations, operation, receipt)
 
@@ -235,6 +245,24 @@ def save_submission_cookies(root, client):
         save_cookies(root, client)
     except OSError as exc:
         print(f"Session save failed: {type(exc).__name__}; run qoj login to refresh the saved session", file=sys.stderr)
+
+
+def run_diagnostics(args, root):
+    if args.export:
+        target = Path(args.export)
+        dump(root, str(target))
+        print("Database copied to " + str(target))
+    if args.lines < 1:
+        raise QojError("Use a positive number of lines")
+    rows = timeline(root, args.operation, args.lines)
+    if not rows:
+        print("No events recorded yet.")
+        return
+    for row in rows:
+        stamp = row['at'][5:19].replace('T', ' ')
+        scope = '' if row['operation_id'] is None else f" op {row['operation_id']}"
+        detail = '' if row['detail'] is None else ' ' + row['detail']
+        print(f"{stamp}{scope} {row['event']}{detail}")
 
 
 def run_recover(args, root):
@@ -276,6 +304,8 @@ def execute(args):
     config = load_config(root)
     if args.command == "recover":
         run_recover(args, root)
+    elif args.command == "diagnostics":
+        run_diagnostics(args, root)
     elif args.command == "login":
         host = base_url(args.url)
         client = QojClient(host)

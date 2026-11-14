@@ -41,6 +41,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply("<title>Recovery test</title><table><tr><td>A</td>"
                        "<td><a href='/contest/4600/problem/23604'>Example</a></td></tr></table>")
         elif self.path == '/contest/4600/problem/23604':
+            if state.broken_form:
+                self.reply("<form id='form-answer'><select name='answer_answer_language'>"
+                           "<option value='C++20'>C++20</option></select></form>")
+                return
             self.reply("<form id='form-answer'><input name='_token' value='test-token'>"
                        "<select name='answer_answer_language'><option value='C++20'>C++20</option></select></form>")
         elif self.path == '/contest/4600/submissions':
@@ -97,6 +101,7 @@ class CliRecoveryTests(unittest.TestCase):
         self.server.challenge = False
         self.server.challenge_before = False
         self.server.post_response = None
+        self.server.broken_form = False
         self.server.accepted = threading.Event()
         self.server.release = threading.Event()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -270,6 +275,37 @@ class CliRecoveryTests(unittest.TestCase):
         self.assert_ok(self.run_cli('qoj', 'recover', '2', '--abandon', input='y\n'))
         self.assert_ok(self.run_cli('submit', str(self.source), '-y'))
         self.assertEqual(len(self.server.uploads), 3)
+
+    def test_form_failure_records_structural_diagnostics(self):
+        self.server.broken_form = True
+        result = self.run_cli('submit', str(self.source), '-y')
+        self.assertEqual(result[0], 1, result)
+        self.assertIn('incomplete', result[2])
+        self.assertIn('token=False', result[2])
+        log = self.run_cli('qoj', 'diagnostics')
+        self.assert_ok(log)
+        self.assertIn('form-error', log[1])
+        self.assertIn('token=False', log[1])
+        self.assertEqual(len(self.server.uploads), 0)
+
+    def test_diagnostics_export_copies_the_local_database(self):
+        self.server.release.set()
+        self.assert_ok(self.run_cli('submit', str(self.source), '-y'))
+        target = self.root / 'shared.sqlite3'
+        result = self.run_cli('qoj', 'diagnostics', '--export', str(target))
+        self.assert_ok(result)
+        self.assertTrue(target.exists())
+        import sqlite3
+        db = sqlite3.connect(target)
+        try:
+            events = [row[0] for row in db.execute('SELECT event FROM diagnostics')]
+            columns = [row[1] for row in db.execute('PRAGMA table_info(operations)')]
+        finally:
+            db.close()
+        self.assertIn('read', events)
+        self.assertIn('receipt', events)
+        self.assertNotIn('source', columns)
+        self.assertNotIn('baseline', columns)
 
     def test_saved_confirmed_receipt_is_available_without_network(self):
         self.server.release.set()

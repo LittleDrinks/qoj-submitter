@@ -11,15 +11,12 @@ import requests
 from bs4 import BeautifulSoup
 
 from .curl_adapter import CurlAdapter
+from .errors import QojError
 from .retry import ReadBudget, ReadFailure
 
 
 HOSTS = {"qoj.ac", "contest.ucup.ac"}
 TIMEOUT = 20
-
-
-class QojError(Exception):
-    pass
 
 
 class TransientReadError(QojError):
@@ -151,14 +148,20 @@ def submission_form(html, page_url, base, cid, pid):
 
 
 class QojClient:
-    def __init__(self, base, session=None, *, on_challenge=None):
+    def __init__(self, base, session=None, *, on_challenge=None, diagnostics=None):
         self.base = base_url(base)
         self.on_challenge = on_challenge
+        self.diagnostics = diagnostics
         self._read_budget = None
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "qoj-submitter-direct/0.1"})
         if session is None and self.base == "https://qoj.ac":
             self.session.mount(self.base + "/", CurlAdapter())
+
+    def log(self, event, detail=None, operation_id=None):
+        if self.diagnostics is not None:
+            from .operations import record
+            record(self.diagnostics, operation_id, event, detail)
 
     def get(self, path, allow_404=False):
         budget = self._read_budget or ReadBudget(requests=6)
@@ -175,8 +178,10 @@ class QojClient:
                     response = self.session.get(url, timeout=timeout, allow_redirects=False)
                 except (requests.Timeout, requests.ConnectionError) as exc:
                     if isinstance(exc, requests.exceptions.SSLError):
+                        self.log('read-error', f"{path} TLS verification failed")
                         raise QojError("TLS certificate verification failed") from exc
                     reason = f"Network read failed: {exc.__class__.__name__}"
+                    self.log('read-error', f"{path} {reason}")
                     response = None
                 except requests.RequestException as exc:
                     raise QojError(f"Network read failed: {exc.__class__.__name__}") from exc
@@ -202,11 +207,15 @@ class QojClient:
                         continue
                     if response.status_code in (408, 429, 500, 502, 503, 504):
                         reason = f"QOJ read returned HTTP {response.status_code}"
+                        self.log('read', f"{path} HTTP {response.status_code} retry-after={response.headers.get('Retry-After')}")
                     else:
                         if response.status_code in (401, 403):
+                            self.log('read', f"{path} HTTP {response.status_code} cf={response.headers.get('cf-mitigated')}")
                             raise QojError(f"HTTP {response.status_code}: check your QOJ login and contest access")
                         if response.status_code >= 400 and not (allow_404 and response.status_code == 404):
                             raise QojError(f"QOJ returned HTTP {response.status_code}")
+                        size = len(response.content) if isinstance(response.content, (bytes, bytearray)) else -1
+                        self.log('read', f"{path} HTTP {response.status_code} bytes={size}")
                         return response
                 attempt += 1
                 if attempt >= 3:
@@ -254,7 +263,25 @@ class QojClient:
 
     def form(self, cid, pid):
         response = self.get(f"/contest/{cid}/problem/{pid}")
-        return submission_form(response.text, response.url, self.base, cid, pid)
+        try:
+            form = submission_form(response.text, response.url, self.base, cid, pid)
+        except QojError as exc:
+            # Keep a structural summary so a later failure can be explained without the page.
+            page = soup(response.text)
+            summary = ', '.join([
+                f"url={response.url}",
+                f"bytes={len(response.content) if isinstance(response.content, (bytes, bytearray)) else -1}",
+                f"form={bool(page.find('form', id='form-answer'))}",
+                f"token={bool(page.find('input', attrs={'name': '_token'}))}",
+                f"select={bool(page.find('select', attrs={'name': 'answer_answer_language'}))}",
+                f"js_group={bool(page.find(id='form-group-answer_answer'))}",
+                f"scripts={sum(1 for tag in page.find_all('script') if 'source_code_form_group' in (tag.string or tag.get_text() or ''))}",
+                f"account={logged_in_user(page) if page.find('a', href=re.compile(r'^/user/profile/')) else 'missing'}",
+            ])
+            self.log('form-error', f"cid={cid} pid={pid} {exc} :: {summary}")
+            raise QojError(f"{exc} [{summary}]") from exc
+        self.log('form', f"cid={cid} pid={pid} languages={len(form.languages)} account={form.account}")
+        return form
 
     def _submission_list(self, cid):
         path = f"/contest/{cid}/submissions"
@@ -276,6 +303,7 @@ class QojClient:
             if not cells:
                 continue
             if len(cells) <= max(2, language_column):
+                self.log('list-error', f"cid={cid} cells={len(cells)} language_column={language_column} row={row.get_text(' ', strip=True)[:200]}")
                 raise QojError("Unsupported QOJ submission list format: incomplete row")
             links = [cell.find("a", href=True) for cell in cells[:2]]
             owner_link = cells[2].find("a", href=True)

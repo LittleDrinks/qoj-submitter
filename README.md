@@ -85,6 +85,18 @@ qoj samples --force             # 允许覆盖已有输出文件
 
 安全验证或双因素认证可能需要在站点上处理；当前 CLI 不支持双因素认证。使用本工具时请遵守比赛和站点规则。
 
+## 诊断
+
+命令在 `~/.local/share/qoj-submitter/operations.sqlite3` 记录最近 2000 条诊断事件，包括读取状态与响应大小、表单解析结果、提交和恢复过程。
+
+```bash
+qoj diagnostics                 # 最近 200 条
+qoj diagnostics 19 --lines 50   # 单个操作
+qoj diagnostics --export /tmp/qoj-diag.sqlite3
+```
+
+导出文件包含诊断事件和不含源码的操作状态；遇到错误时附上它即可定位。
+
 ## 开发与帮助
 
 ```bash
