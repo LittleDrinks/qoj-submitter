@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -112,6 +113,7 @@ class SubmissionForm:
     action: str
     token: str
     languages: list
+    account: str = None
 
 
 def submission_form(html, page_url, base, cid, pid):
@@ -141,12 +143,17 @@ def submission_form(html, page_url, base, cid, pid):
     if (f"{parsed.scheme}://{parsed.netloc}" != base
             or not re.fullmatch(rf"/contest/{re.escape(cid)}/problem/{re.escape(pid)}(?:/.*)?", parsed.path)):
         raise QojError("Unexpected submission form destination")
-    return SubmissionForm(action, token["value"], languages)
+    try:
+        account = logged_in_user(page)
+    except QojError:
+        account = None
+    return SubmissionForm(action, token["value"], languages, account)
 
 
 class QojClient:
-    def __init__(self, base, session=None):
+    def __init__(self, base, session=None, *, on_challenge=None):
         self.base = base_url(base)
+        self.on_challenge = on_challenge
         self._read_budget = None
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "qoj-submitter-direct/0.1"})
@@ -174,7 +181,15 @@ class QojClient:
                     raise QojError(f"Network read failed: {exc.__class__.__name__}") from exc
                 if response is not None:
                     if response.headers.get('cf-mitigated') == 'challenge':
-                        raise ChallengeError("Cloudflare verification required; complete verification in your browser, then retry")
+                        if self.on_challenge is None:
+                            raise ChallengeError("Cloudflare verification required; complete verification in your browser, then retry")
+                        started = time.monotonic()
+                        try:
+                            self.on_challenge(url)
+                        finally:
+                            # Human verification has its own timeout, outside the read budget.
+                            budget.deadline += time.monotonic() - started
+                        continue
                     parsed = urlparse(response.url)
                     if f"{parsed.scheme}://{parsed.netloc}" != self.base:
                         raise QojError("Unexpected redirect to another host")
@@ -340,6 +355,11 @@ class QojClient:
                 return self.recover_submission(form.action, contents, language, cid, before)
             raise UnknownSubmission("Upload response lost; recover the saved receipt") from exc
         if response.headers.get('cf-mitigated') == 'challenge':
+            if self.on_challenge is not None:
+                try:
+                    self.on_challenge(form.action)
+                except QojError as exc:
+                    raise UnknownSubmission(f"Receipt verification paused: {exc}") from exc
             raise UnknownSubmission("Cloudflare verification required; recover the saved receipt after verification")
         if response.status_code >= 500 or response.status_code == 408:
             if recover_receipt:
