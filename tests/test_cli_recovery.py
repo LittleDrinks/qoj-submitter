@@ -257,6 +257,7 @@ class CliRecoveryTests(unittest.TestCase):
         self.server.retry_after = '120'
         result = self.run_cli('submit', str(self.source), '-y')
         self.assertEqual(result[0], 1, result)
+        self.assertIn('HTTP 429', result[2])
         self.assertIn('budget exhausted', result[2])
         self.assertEqual(len(self.server.uploads), 0)
 
@@ -284,6 +285,7 @@ class CliRecoveryTests(unittest.TestCase):
         self.server.retry_after = format_datetime(datetime.now(timezone.utc) + timedelta(minutes=2), usegmt=True)
         result = self.run_cli('qoj', 'recover')
         self.assertEqual(result[0], 2, result)
+        self.assertIn('HTTP 429', result[2])
         self.assertIn('budget exhausted', result[2])
         self.assert_ok(self.run_cli('qoj', 'recover'))
         self.assertEqual(len(self.server.uploads), 1)
