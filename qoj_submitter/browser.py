@@ -1,5 +1,4 @@
 """A command-scoped browser for human verification and same-origin requests."""
-import base64
 import json
 import os
 from pathlib import Path
@@ -74,6 +73,9 @@ class BrowserSession:
             raise BrowserError('Browser verification needs a graphical session; retry from a desktop terminal')
         import websocket
         self.profile = tempfile.TemporaryDirectory(prefix='qoj-verification-')
+        if self.firefox:
+            # A plain WebDriver flag makes Cloudflare treat the verification window as a bot.
+            Path(self.profile.name, 'user.js').write_text('user_pref("dom.webdriver.enabled", false);\n')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
@@ -159,14 +161,13 @@ class BrowserSession:
                 value['expiry' if self.firefox else 'expires'] = cookie.expires
             if self.firefox:
                 value['value'] = {'type': 'string', 'value': cookie.value}
-                self.command('storage.setCookie', {'cookie': value,
-                    'partition': {'type': 'context', 'context': self.context}})
+                self.command('storage.setCookie', {'cookie': value})
             else:
                 self.command('Network.setCookies', {'cookies': [value]})
 
     def export_cookies(self, jar):
         if self.firefox:
-            cookies = self.command('storage.getCookies', {'partition': {'type': 'context', 'context': self.context}})['cookies']
+            cookies = self.command('storage.getCookies', {})['cookies']
         else:
             cookies = self.command('Network.getCookies', {'urls': [self.base + '/']})['cookies']
         host = urlsplit(self.base).hostname
@@ -188,57 +189,32 @@ class BrowserSession:
         else:
             self.command('Page.navigate', {'url': url})
 
-    def request(self, method, url, headers=None, body=None, timeout=8):
-        if origin(url) != self.base or method not in ('GET', 'POST'):
-            raise BrowserError('Browser request is outside this submission')
-        if not isinstance(body, (bytes, bytearray, type(None))):
-            raise BrowserError('Unsupported browser upload body')
-        payload = {'method': method, 'url': url, 'origin': self.base,
-                   'headers': {k: v for k, v in (headers or {}).items() if k.lower() in ('content-type', 'accept')},
-                   'body': base64.b64encode(body).decode() if body is not None else None,
-                   'timeout': max(1, int(timeout * 1000))}
-        expression = '''(async p=>{
-          if(location.origin!==p.origin) throw Error('origin changed');
-          const response=await fetch(p.url,{method:p.method,mode:'same-origin',credentials:'same-origin',
-            redirect:p.method==='POST'?'error':'follow',cache:'no-store',headers:p.headers,
-            body:p.body===null?undefined:Uint8Array.from(atob(p.body),c=>c.charCodeAt(0)),
-            signal:AbortSignal.timeout(p.timeout)});
-          const bytes=new Uint8Array(await response.arrayBuffer());
-          let binary='';for(let i=0;i<bytes.length;i+=32768) binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
-          return JSON.stringify({url:response.url,status:response.status,redirected:response.redirected,
-            headers:Object.fromEntries(response.headers),body:btoa(binary)});
-        })(''' + json.dumps(payload) + ')'
-        result = json.loads(self.evaluate(expression, timeout=timeout + 2))
-        if origin(result['url']) != self.base:
-            raise BrowserError('Browser request left the current QOJ site')
-        reply = requests.Response()
-        reply.url = url
-        reply.status_code = result['status']
-        reply.headers.update(result['headers'])
-        reply._content = base64.b64decode(result['body'])
-        reply.encoding = 'utf-8'
-        if result['redirected']:
-            reply.status_code = 302
-            reply.headers['Location'] = result['url']
-        return reply
-
     def verify(self, url, timeout):
         self.navigate(url)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise BrowserClosed('Browser window closed; retry the command to resume verification')
+            # The loaded document is authoritative: Cloudflare rejects automated
+            # fetch() calls even after the human passed the challenge, while a
+            # normal navigation succeeds.
             try:
-                response = self.request('GET', url, timeout=min(5, max(.1, deadline - time.monotonic())))
-                if response.headers.get('cf-mitigated') != 'challenge' and response.status_code not in (401, 403, 429, 503):
+                state = json.loads(self.evaluate("""JSON.stringify((()=>({
+                    href: location.href,
+                    title: document.title,
+                    challenge: !!document.querySelector(
+                        '#challenge-form, #challenge-running, #challenge-stage, '
+                        + 'script[src*="challenges.cloudflare.com"]')
+                        || /just a moment|请稍候|正在验证/i.test(document.title || '')
+                }))())"""))
+                if not state.get('challenge') and origin(state.get('href', '')) == self.base:
                     return
             except BrowserClosed:
                 raise
             except BrowserError:
-                # Navigation replaces the script context while a human is verifying.
                 if self.process.poll() is not None:
                     raise
-            time.sleep(min(1, max(0, deadline - time.monotonic())))
+            time.sleep(.5)
         raise BrowserError('Browser verification timed out; retry the command to resume verification')
 
     def close(self):
@@ -270,32 +246,6 @@ class BrowserSession:
                     time.sleep(.1)
 
 
-class BrowserAdapter(BaseAdapter):
-    def __init__(self, browser):
-        self.browser = browser
-        self.upload_url = None
-        self.uploaded = False
-
-    def send(self, request, **kwargs):
-        if request.method == 'POST':
-            if request.url != self.upload_url or self.uploaded:
-                raise requests.RequestException('This operation permits only one upload')
-            self.uploaded = True
-        elif request.method != 'GET':
-            raise requests.RequestException('Unsupported browser request method')
-        try:
-            response = self.browser.request(request.method, request.url, request.headers,
-                request.body.encode() if isinstance(request.body, str) else request.body,
-                timeout=kwargs.get('timeout') or 8)
-            response.request = request
-            return response
-        except BrowserError as exc:
-            raise requests.ConnectionError(str(exc)) from exc
-
-    def close(self):
-        pass
-
-
 class ChallengeRecovery:
     def __init__(self, client, *, executable=None, disabled=False, timeout=300):
         self.client = client
@@ -303,7 +253,6 @@ class ChallengeRecovery:
         self.enabled = not disabled and (executable is not None or sys.stdin.isatty())
         self.timeout = timeout
         self.browser = None
-        self.adapter = None
         self.generation = 0
         self.previous = None
         self.attempted = False
@@ -328,14 +277,8 @@ class ChallengeRecovery:
             self.client.log('challenge-error', f"{exc} :: browser={self.browser.executable}")
             raise
         self.client.log('challenge-ok', 'browser verification confirmed')
-        self.adapter = BrowserAdapter(self.browser)
-        self.client.session.mount(self.client.base + '/', self.adapter)
         self.generation += 1
         print('Browser access confirmed. Continuing the saved operation.', flush=True)
-
-    def allow_upload(self, url):
-        if self.adapter:
-            self.adapter.upload_url = url
 
     def __exit__(self, exc_type, *_):
         self.client.on_challenge = self.previous

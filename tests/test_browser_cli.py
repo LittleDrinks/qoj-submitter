@@ -18,13 +18,15 @@ from test_cli_recovery import Handler, SOURCE
 
 class BrowserHandler(Handler):
     def verified(self):
-        return 'fixture_verified=yes' in self.headers.get('Cookie', '')
+        # The verification browser and the CLI use separate connections; model the
+        # site granting access to the client as a whole after the human challenge.
+        return bool(self.server.fixture_verified)
 
     def do_GET(self):
         state = self.server
         should_verify = state.browser_challenge and (state.uploads or '/submissions' in self.path)
         if should_verify and not self.verified():
-            return self.reply('''<!doctype html><meta charset="utf-8"><title>QOJ verification test</title>
+            return self.reply('''<!doctype html><meta charset="utf-8"><title>QOJ verification test</title><div id="challenge-form" hidden></div>
               <h1>Browser handoff test</h1><p>This local page tests human verification recovery.</p>
               <button id="test-verify" onclick="window.fixtureVerification=fetch('/verify',{method:'POST'}).then(()=>this.textContent='Test verification complete')">Complete test verification</button>''',
               403, {'cf-mitigated': 'challenge'})
@@ -39,6 +41,7 @@ class BrowserHandler(Handler):
         if self.path == '/verify':
             self.rfile.read(int(self.headers.get('Content-Length', '0')))
             self.server.verifications += 1
+            self.server.fixture_verified = True
             if self.server.change_user:
                 self.server.user = 'OtherAccount'
             return self.reply('verified', headers={'Set-Cookie': 'fixture_verified=yes; Path=/; HttpOnly; SameSite=Lax'})
@@ -71,7 +74,7 @@ class BrowserCliTests(unittest.TestCase):
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), BrowserHandler)
         for name, value in dict(uploads=[], list_statuses=[], hidden_source=0, list_requests=0,
             retry_after='0', user='Tester', challenge=False, challenge_before=False,
-            post_response=None, browser_challenge=False, verifications=0, change_user=False, upload_redirect=302, challenge_upload_response=False).items():
+            post_response=None, browser_challenge=False, verifications=0, change_user=False, upload_redirect=302, challenge_upload_response=False, fixture_verified=False).items():
             setattr(self.server, name, value)
         self.server.accepted = threading.Event(); self.server.release = threading.Event()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
