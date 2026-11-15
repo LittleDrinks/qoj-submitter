@@ -41,6 +41,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply("<title>Recovery test</title><table><tr><td>A</td>"
                        "<td><a href='/contest/4600/problem/23604'>Example</a></td></tr></table>")
         elif self.path == '/contest/4600/problem/23604':
+            if getattr(state, 'truncated_form_reads', 0) > 0:
+                state.truncated_form_reads -= 1
+                self.reply("<form id='form-answer'><input name='_token' value='test-token'>")
+                return
             if state.broken_form:
                 self.reply("<form id='form-answer'><select name='answer_answer_language'>"
                            "<option value='C++20'>C++20</option></select></form>")
@@ -102,6 +106,7 @@ class CliRecoveryTests(unittest.TestCase):
         self.server.challenge_before = False
         self.server.post_response = None
         self.server.broken_form = False
+        self.server.truncated_form_reads = 0
         self.server.accepted = threading.Event()
         self.server.release = threading.Event()
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -275,6 +280,13 @@ class CliRecoveryTests(unittest.TestCase):
         self.assert_ok(self.run_cli('qoj', 'recover', '2', '--abandon', input='y\n'))
         self.assert_ok(self.run_cli('submit', str(self.source), '-y'))
         self.assertEqual(len(self.server.uploads), 3)
+
+    def test_incomplete_form_is_retried(self):
+        self.server.truncated_form_reads = 1
+        self.server.release.set()
+        result = self.run_cli('submit', str(self.source), '-y')
+        self.assert_ok(result)
+        self.assertEqual(len(self.server.uploads), 1)
 
     def test_form_failure_records_structural_diagnostics(self):
         self.server.broken_form = True
