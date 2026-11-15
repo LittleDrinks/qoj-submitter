@@ -14,10 +14,6 @@ if "QOJ_TEST_PORT" in os.environ:
         if parts.hostname not in ("qoj.ac", "contest.ucup.ac"):
             raise AssertionError("Integration test attempted an external request")
         adapter = self.get_adapter(original_url)
-        if os.environ.get('QOJ_BROWSER_TEST_MODE'):
-            from qoj_submitter.browser import BrowserAdapter
-            if isinstance(adapter, BrowserAdapter):
-                return original_send(self, request, **kwargs)
         request.url = f"http://127.0.0.1:{os.environ['QOJ_TEST_PORT']}{parts.path}"
         if parts.query:
             request.url += "?" + parts.query
@@ -46,13 +42,6 @@ if "QOJ_TEST_PORT" in os.environ:
 
             def navigate(self, url):
                 return super().navigate(self.local_url(url))
-
-            def request(self, method, url, *args, **kwargs):
-                result = super().request(method, self.local_url(url), *args, **kwargs)
-                result.url = url
-                if result.headers.get('Location', '').startswith(self.base + '/'):
-                    result.headers['Location'] = self.logical + result.headers['Location'][len(self.base):]
-                return result
 
             def verify(self, url, timeout):
                 mode = os.environ['QOJ_BROWSER_TEST_MODE']

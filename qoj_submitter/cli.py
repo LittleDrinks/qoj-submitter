@@ -200,7 +200,6 @@ def submit_with_client(args, root, config, client, recovery):
                         raise QojError("The QOJ account changed during verification; retry with the intended account")
                     if language not in form.languages:
                         raise QojError("The selected language changed during verification; retry the command")
-                recovery.allow_upload(form.action)
                 operation = operations.start(host, contest["id"], problem["id"], form, language, contents, before)
                 client.log('operation', f"start {contest['id']}/{problem['id']} {language}", operation['id'])
                 print(f"Operation {operation['id']} saved. Resume verification: qoj recover {operation['id']}", flush=True)
