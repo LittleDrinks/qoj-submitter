@@ -262,26 +262,31 @@ class QojClient:
         return {"id": cid, "name": title, "problems": contest_problems(response.text, cid)}
 
     def form(self, cid, pid):
-        response = self.get(f"/contest/{cid}/problem/{pid}")
-        try:
-            form = submission_form(response.text, response.url, self.base, cid, pid)
-        except QojError as exc:
-            # Keep a structural summary so a later failure can be explained without the page.
-            page = soup(response.text)
-            summary = ', '.join([
-                f"url={response.url}",
-                f"bytes={len(response.content) if isinstance(response.content, (bytes, bytearray)) else -1}",
-                f"form={bool(page.find('form', id='form-answer'))}",
-                f"token={bool(page.find('input', attrs={'name': '_token'}))}",
-                f"select={bool(page.find('select', attrs={'name': 'answer_answer_language'}))}",
-                f"js_group={bool(page.find(id='form-group-answer_answer'))}",
-                f"scripts={sum(1 for tag in page.find_all('script') if 'source_code_form_group' in (tag.string or tag.get_text() or ''))}",
-                f"account={logged_in_user(page) if page.find('a', href=re.compile(r'^/user/profile/')) else 'missing'}",
-            ])
-            self.log('form-error', f"cid={cid} pid={pid} {exc} :: {summary}")
-            raise QojError(f"{exc} [{summary}]") from exc
-        self.log('form', f"cid={cid} pid={pid} languages={len(form.languages)} account={form.account}")
-        return form
+        for attempt in range(3):
+            response = self.get(f"/contest/{cid}/problem/{pid}")
+            try:
+                form = submission_form(response.text, response.url, self.base, cid, pid)
+            except QojError as exc:
+                # Keep a structural summary so a later failure can be explained without the page.
+                page = soup(response.text)
+                summary = ', '.join([
+                    f"url={response.url}",
+                    f"bytes={len(response.content) if isinstance(response.content, (bytes, bytearray)) else -1}",
+                    f"form={bool(page.find('form', id='form-answer'))}",
+                    f"token={bool(page.find('input', attrs={'name': '_token'}))}",
+                    f"select={bool(page.find('select', attrs={'name': 'answer_answer_language'}))}",
+                    f"js_group={bool(page.find(id='form-group-answer_answer'))}",
+                    f"scripts={sum(1 for tag in page.find_all('script') if 'source_code_form_group' in (tag.string or tag.get_text() or ''))}",
+                    f"account={logged_in_user(page) if page.find('a', href=re.compile(r'^/user/profile/')) else 'missing'}",
+                ])
+                self.log('form-error', f"attempt={attempt + 1} cid={cid} pid={pid} {exc} :: {summary}")
+                if attempt < 2 and 'incomplete or unsupported' in str(exc):
+                    # A truncated or partially rendered page is transient; fetch it again.
+                    time.sleep(.2 * (attempt + 1))
+                    continue
+                raise QojError(f"{exc} [{summary}]") from exc
+            self.log('form', f"cid={cid} pid={pid} languages={len(form.languages)} account={form.account}")
+            return form
 
     def _submission_list(self, cid):
         path = f"/contest/{cid}/submissions"
