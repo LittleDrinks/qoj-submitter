@@ -302,11 +302,17 @@ class QojClient:
         if "Language" not in headings:
             raise QojError("Unsupported QOJ submission list format: missing Language heading")
         language_column = headings.index("Language")
+        body_rows = [row for row in table.find_all("tr") if row.find("td", recursive=False)]
+        if len(body_rows) == 1:
+            cells = body_rows[0].find_all("td", recursive=False)
+            # QOJ renders an empty result as a single cell spanning the table.
+            if (len(cells) == 1 and cells[0].get("colspan") == "233"
+                    and cells[0].decode_contents() == "None"):
+                return username, {}
+
         rows = {}
-        for row in table.find_all("tr"):
+        for row in body_rows:
             cells = row.find_all("td", recursive=False)
-            if not cells:
-                continue
             if len(cells) <= max(2, language_column):
                 self.log('list-error', f"cid={cid} cells={len(cells)} language_column={language_column} row={row.get_text(' ', strip=True)[:200]}")
                 raise QojError("Unsupported QOJ submission list format: incomplete row")
