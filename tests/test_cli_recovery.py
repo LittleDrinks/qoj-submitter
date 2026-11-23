@@ -63,8 +63,9 @@ class Handler(BaseHTTPRequestHandler):
                            "<td><span class='uoj-username'>Tester</span></td><td>C++20</td></tr>"
                            for i in range(1, len(state.uploads) + 1))
             self.reply(f"<a href='/logout'>Logout</a><a href='/user/profile/{state.user}'>My Profile</a>"
-                       "<table><tr><th>ID</th><th>Problem</th><th>Submitter</th><th>Language</th></tr>"
-                       + rows + '</table>')
+                       "<table><thead><tr><th>ID</th><th>Problem</th><th>Submitter</th>"
+                       "<th>Language</th></tr></thead><tbody>"
+                       + (rows or '<tr><td colspan="233">None</td></tr>') + '</tbody></table>')
         elif self.path.startswith('/submission/'):
             if state.hidden_source:
                 state.hidden_source -= 1

@@ -80,6 +80,15 @@ class SubmissionConfirmationTests(unittest.TestCase):
         self.session.get.side_effect = [response(listing()), response(listing(NEW)), source_response()]
         self.assertEqual(self.submit(), "https://qoj.ac/submission/3345815")
 
+    def test_incomplete_submission_row_prevents_post(self):
+        incomplete = '<tr><td><a href="/submission/3345779">#3345779</a></td></tr>'
+        for rows in (incomplete, '<tr><td colspan="233">None</td></tr>' + incomplete):
+            with self.subTest(rows=rows):
+                self.session.get.return_value = response(listing().replace("<tbody>", "<tbody>" + rows))
+                with self.assertRaisesRegex(QojError, "incomplete row"):
+                    self.submit()
+                self.session.post.assert_not_called()
+
     def test_old_submission_is_never_reported_as_new(self):
         self.session.get.return_value = response(listing(OLD))
         with self.assertRaises(UnknownSubmission):
